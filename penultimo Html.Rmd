@@ -1,0 +1,146 @@
+---
+title: "Motion Prediction"
+author: "Gian Balsamo"
+date: "November 17, 2015"
+header-includes: \usepackage{graphicx}
+---
+## Introduction
+
+It is well known that data from accelerometers enable us to gauge the frequency and intensity of certain physical activities. Less well known and less explored is the fact that the same sort of data may be used to gauge the quality of certain physical activities. This report is inspired by a 2013 study by Andreas Bulling et alia, cited in Reference, where it is shown that the quality of certain physical activities may be captured by a machine learning approach. Bulling and his colleagues elaborated their views based on data collected from accelerometers placed on the belt, forearm, arm, and dumbell of six participants who were asked to perform barbell lifts in one correct way (class A) and 4 incorrect ways (classes B, C, D, and E).  
+The following image, taken from Figure 1 of Bulling et alia's study, gives a visual illustration of the logic inherent in this data collection.
+
+![caption.](/Users/gianfrancobalsamo/Dropbox/BIG_DATA/practical\ machine\ learning/final_project/essential_image.png)
+
+For the extraction of quantitative features, Bulling and his colleagues “used a sliding window approach with different lengths from 0.5 second to 2.5 seconds, with 0.5 second overlap. In each step of the sliding window approach [they] calculated features on the Euler angles (roll, pitch and yaw), as well as the raw accelerometer, gyroscope and magnetometer readings” [p.3]. From the resulting dataset, they computed classifiers designed to predict a subject’s performance quality.  
+In this report I process their data through a supervised machine learning approach to compute and test the accuracy of my own classifier.  
+Below is the code of my initial data assemblage and "cleaning." I have set a seed so as to make my results reproducible.
+
+
+```{r setoptions,echo=FALSE,include=FALSE}
+library(caret)
+library(gbm)
+library(rattle)
+library(rpart)
+library(rpart.plot)
+library(randomForest)
+library(plyr)
+library(lubridate)
+library(knitr)
+opts_chunk$set(echo=FALSE, results="hide",fig.align='center',dev='pdf')
+```
+
+```{r initial data, echo=TRUE}
+set.seed(1234)
+dati<-read.csv("pml-training.csv")
+classColumn<-dati[,dim(dati)[2]]
+
+dati<-dati[,-c(1:7)]
+toDrop<-nearZeroVar(dati[,-dim(dati)[2]], saveMetrics=TRUE)
+
+good_columns<-names(dati[,-dim(dati)[2]][!toDrop[,dim(toDrop)[2]]])
+
+lista<-match(good_columns,names(dati[,-dim(dati)[2]]))
+lista<-as.vector(lista)
+dati<-dati[,-dim(dati)[2]][,lista]
+datiFinal <- dati 
+for(i in 1:length(dati)) {
+      if( sum( is.na(dati[, i] ) ) /nrow(dati) >= .8 ) {
+            for(j in 1:length(datiFinal)) {
+                  if( length(grep(names(dati[i]), names(datiFinal)[j]) ) ==1)  {
+                        datiFinal<-datiFinal[ , -j]
+                  }   
+            } 
+      }
+}
+      
+datiFinal<-cbind(datiFinal,classColumn)
+datiFinal$classColumn<-as.factor(datiFinal$classColumn)
+
+countZ<-0
+for(i in 1:length(dati)) {
+      if( sum( is.na(dati[, i] ) ) /nrow(dati) >= .8 ) { 
+            countZ=countZ+1
+            }
+      }
+```
+
+
+The response variable, "classe", is distributed according to the following proportions in my dataset:  
+- A: `r sum(datiFinal$classColumn=="A")/length(datiFinal$classColumn)`  
+- B: `r sum(datiFinal$classColumn=="B")/length(datiFinal$classColumn)`  
+- C: `r sum(datiFinal$classColumn=="C")/length(datiFinal$classColumn)`  
+- D: `r sum(datiFinal$classColumn=="D")/length(datiFinal$classColumn)`  
+- E: `r sum(datiFinal$classColumn=="E")/length(datiFinal$classColumn)`  
+Aside from the columns that indentify the subject's name or the windows of performance, all of them irrelevant to my computations,I found `r countZ` columns whose entries are NA's in more than 80% of the observations and `r sum(toDrop[,4])` columns whose entries have near-zero variance. I dropped all these columns from my dataset.  
+The following code was used to partition the dataset into a training and a validation set, so as to test the accuracy of my chosen model before engaging in actual predictions.  I ought to point out right away that **this data partition was not used with the Random Forest model**, for the simple reason that it would entail a mere loss of available data. As established by Leo Breiman and Adele Cutler, creators of this model, *there is no need for cross-validation or a separate test set in the computation of the random forest to get an unbiased estimate of test set error*: in the construction of each tree, about one-third of the cases are out-of-bag, i.e., they are automatically and randomly left out of the bootstrap aggregating sample, and used to test this specific tree. 
+```{r cross-validating split, echo=TRUE}
+partition <- createDataPartition(y=datiFinal$classColumn, p=0.75, list=FALSE)
+training <- datiFinal[partition, ] 
+validation <- datiFinal[-partition, ]
+predictors<-training[,-dim(datiFinal)[2]]
+response<-training$classColumn
+validatingResponse<-validation$classColumn
+validatingPredictors<-validation[,-dim(datiFinal)[2]]
+```
+
+To get a better sense of the logic inherent in my dataset, I'll first model a simple classification tree and show it structure.
+
+```{r method rpart for classification tree,echo=TRUE,results='asis',cache=TRUE}
+modelRPART<-train(response~.,method="rpart",data=predictors)
+fancyRpartPlot(modelRPART$finalModel)
+predicoRPART<-predict(modelRPART,newdata=validatingPredictors)
+a<-confusionMatrix(predicoRPART,validatingResponse)$overall['Accuracy'][[1]]
+b<-varImp(modelRPART)
+```
+
+Henceforth I will calculate the expected out-of-sample error as $EOOSE = 1-ACC$, where EOOSE stands for "out-of-sample error" and ACC for "accuracy". In the case of the above modelRPART, the EOOSE is a disappointing `r 1-a`.
+I will now model the most robust and promising of models for this sort of classification problems, i.e., random forest. As foretold above, in this case I do not need to have recourse to my training and validation sets, but can use the whole dataset, as assembled and "cleaned" above. This method is very computer-time consuming. 
+
+```{r method rf (Random Forest), echo=TRUE,results='asis',cache=TRUE}
+modelRandomForest<-train(datiFinal$classColumn~.,method="rf",data=datiFinal[,-dim(datiFinal)[2]])
+predicoRandomForest<-predict(modelRandomForest,newdata=datiFinal[,-dim(datiFinal)[2]])
+#table(predicoRandomForest,datiFinal$classColumn)
+c<-confusionMatrix(predicoRandomForest,datiFinal$classColumn)$overall['Accuracy'][[1]]
+d<-varImp(modelRandomForest)
+e<-modelRandomForest$finalModel$err.rate
+g<-dim(modelRandomForest$finalModel$err.rate)[1]
+```
+
+The number of trees is `r g`.
+The EOOSE is `r 1-c`.
+The out-of-bag or OOB error rate calculated by the random forest procedure itself is `r e[g,1]`
+**The modelRandomForest is clearly the one to be used for prediction.**  
+In the pre-production of this report I have tried out several other models, three of which are listed below (namely, a bootstrap aggregating model ("bag"), a boosting model (based on a method that combines a selection of individually weak classifiers), and a linear discriminant analysis model ("LDA").) Their respective $EOOSE's were: 4.87%, 4.87%, and a mediocre 29.53% for LDA.  
+
+```{r other models,eval=FALSE,echo=TRUE}
+treebag<-bag(predictors,response,B=6,
+             bagControl=bagControl(fit=ctreeBag$fit,
+                                   predict=ctreeBag$pred,
+                                   aggregate=ctreeBag$aggregate))
+modelBoosting<-train(response~.,method="gbm",data=predictors,verbose=F)
+modelLDA<-train(response~.,method="lda",data=predictors)
+```
+
+This final section of code applies my modelRandomForest model to 20 different test cases and prints my 20 predictions. 
+
+```{r prediction stage,echo=TRUE,results='asis',cache=TRUE}
+datiTest<-read.csv("pml-testing.csv")
+legitCol<-colnames(datiFinal[,-dim(datiFinal)[2]])
+datiTestSmall<-datiTest[,legitCol]
+datiTestSmall<-cbind(datiTestSmall,datiTest[,dim(datiTest)[2]])
+colnames(datiTestSmall)[dim(datiTestSmall)[2]]<-"problem_id"
+
+predictors_new<-datiTestSmall[,-dim(datiTestSmall)[2]]
+vettorePredictions<-vector()
+for (i in 1:dim(predictors_new)[1]) {
+      predizione=predict(modelRandomForest,newdata=predictors_new[i,]) 
+      vettorePredictions=c(vettorePredictions,predizione)
+      }
+predictions<-chartr("12345", "ABCDE", vettorePredictions)
+print (predictions)
+```
+
+The success rate is 100%.
+
+# Reference
+Bulling, Andreas et alia, “Qualitative Activity Recognition of Weight Lifting Exercises,” Augmented Human International Conference, 2013, DOI: 10.1145/2459236.2459256
